@@ -221,6 +221,19 @@ function parseServers(html) {
   return servers;
 }
 
+function findEpisodeIds(html, epNum) {
+  var re = /<a\b[^>]*>/gi, m, fallback = null;
+  while ((m = re.exec(html))) {
+    var tag = m[0];
+    var ids = /data-ids="([^"]+)"/i.exec(tag);
+    if (!ids) continue;
+    var num = /data-num="([^"]+)"/i.exec(tag);
+    if (num && parseInt(num[1], 10) === epNum) return decodeEntities(ids[1]);
+    if (!fallback && /class="[^"]*\bactive\b/i.test(tag)) fallback = decodeEntities(ids[1]);
+  }
+  return fallback;
+}
+
 function resolveLink(base, linkId, referer) {
   return run(function* () {
     var urls = [
@@ -235,7 +248,7 @@ function resolveLink(base, linkId, referer) {
       else if (d.result && typeof d.result === "object") u = d.result.url || d.result.link || null;
       else if (typeof d.result === "string") u = d.result;
       else u = d.url || d.link || null;
-      if (u && /^https?:/i.test(u)) return u.replace(/\\\//g, "/");
+      if (u && /^https?:/i.test(u)) { console.log("[Anikoto] embed " + u); return u.replace(/\\\//g, "/"); }
     }
     return null;
   });
@@ -327,7 +340,25 @@ function getStreams(tmdbId, mediaType, season, episode) {
       var watchUrl = entry.r.url + "/ep-" + epNum;
       var wp = yield getPage(watchUrl, { Referer: base + "/" });
       if (!wp) return [];
-      var servers = parseServers(wp.text).filter(function (x) {
+      var all = parseServers(wp.text);
+      if (!all.length) {
+        // Server list is loaded by XHR on the site: /ajax/server/list?servers=<episode data-ids>
+        var tok = findEpisodeIds(wp.text, epNum);
+        console.log("[Anikoto] no servers in page, episode token " + (tok ? "found" : "MISSING"));
+        if (tok) {
+          var lu = [
+            base + "/ajax/server/list?servers=" + encodeURIComponent(tok),
+            base + "/ajax/server/list/" + encodeURIComponent(tok)
+          ];
+          for (var li = 0; li < lu.length && !all.length; li++) {
+            var ld = yield jsonGet(lu[li], base);
+            var lh = ld && (typeof ld === "string" ? ld : ld.result);
+            if (typeof lh === "string") all = parseServers(lh);
+            console.log("[Anikoto] server list try " + li + ": " + all.length);
+          }
+        }
+      }
+      var servers = all.filter(function (x) {
         return (x.type === "dub" && wantDub) || (x.type === "sub" && wantSub) || (x.type !== "dub" && x.type !== "sub");
       });
       console.log("[Anikoto] " + servers.length + " server(s)");
