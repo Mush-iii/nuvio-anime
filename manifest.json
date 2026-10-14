@@ -14,8 +14,8 @@
         "movie",
         "tv"
       ],
-      "filename": "Anime/anikoto.js",
-      "url": "https://raw.githubusercontent.com/Mush-iii/nuvio-anime/refs/heads/main/Anime/anikoto.js",
+      "filename": "Anime/providers/anikoto.js",
+      "url": "https://raw.githubusercontent.com/Mush-iii/nuvio-anime/refs/heads/main/Anime/providers/anikoto.js",
       "enabled": true,
       "hasSettings": true,
       "formats": [
