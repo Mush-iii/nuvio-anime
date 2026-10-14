@@ -221,17 +221,16 @@ function parseServers(html) {
   return servers;
 }
 
-function findEpisodeIds(html, epNum) {
-  var re = /<a\b[^>]*>/gi, m, fallback = null;
+function findEpisode(html, epNum) {
+  var re = /<a\b[^>]*>/gi, m;
   while ((m = re.exec(html))) {
     var tag = m[0];
-    var ids = /data-ids="([^"]+)"/i.exec(tag);
-    if (!ids) continue;
     var num = /data-num="([^"]+)"/i.exec(tag);
-    if (num && parseInt(num[1], 10) === epNum) return decodeEntities(ids[1]);
-    if (!fallback && /class="[^"]*\bactive\b/i.test(tag)) fallback = decodeEntities(ids[1]);
+    if (!num || parseInt(num[1], 10) !== epNum) continue;
+    var g = function (n) { var x = new RegExp("data-" + n + '="([^"]*)"', "i").exec(tag); return x ? decodeEntities(x[1]) : null; };
+    return { ids: g("ids"), mal: g("mal"), slug: g("slug"), ts: g("timestamp") };
   }
-  return fallback;
+  return null;
 }
 
 function resolveLink(base, linkId, referer) {
@@ -341,23 +340,43 @@ function getStreams(tmdbId, mediaType, season, episode) {
       var wp = yield getPage(watchUrl, { Referer: base + "/" });
       if (!wp) return [];
       var all = parseServers(wp.text);
-      if (!all.length) {
-        // Server list is loaded by XHR on the site: /ajax/server/list?servers=<episode data-ids>
-        var tok = findEpisodeIds(wp.text, epNum);
-        console.log("[Anikoto] no servers in page, episode token " + (tok ? "found" : "MISSING"));
-        if (tok) {
-          var lu = [
-            base + "/ajax/server/list?servers=" + encodeURIComponent(tok),
-            base + "/ajax/server/list/" + encodeURIComponent(tok)
-          ];
-          for (var li = 0; li < lu.length && !all.length; li++) {
-            var ld = yield jsonGet(lu[li], base);
-            var lh = ld && (typeof ld === "string" ? ld : ld.result);
-            if (typeof lh === "string") all = parseServers(lh);
-            console.log("[Anikoto] server list try " + li + ": " + all.length);
-          }
-        }
+      var extra = [];
+      // Server list is loaded by XHR: episode list -> data-ids -> ajax/server/list
+      var wm = /id="watch-main"[^>]*?data-id="(\d+)"/i.exec(wp.text) || /data-id="(\d+)"[^>]*?id="watch-main"/i.exec(wp.text);
+      var animeId = wm ? wm[1] : null;
+      var epInfo = null;
+      if (animeId) {
+        var el = yield jsonGet(base + "/ajax/episode/list/" + animeId, base);
+        var elh = el && (typeof el === "string" ? el : el.result);
+        if (typeof elh === "string") epInfo = findEpisode(elh, epNum);
       }
+      if (!epInfo) epInfo = findEpisode(wp.text, epNum);
+      console.log("[Anikoto] animeId " + animeId + ", episode data " + (epInfo ? "found" : "MISSING"));
+      if (epInfo && epInfo.ids) {
+        var ld = yield jsonGet(base + "/ajax/server/list?servers=" + encodeURIComponent(epInfo.ids), base);
+        var lh = ld && (typeof ld === "string" ? ld : ld.result);
+        if (typeof lh === "string") {
+          parseServers(lh).forEach(function (x) { all.push(x); });
+        }
+        console.log("[Anikoto] server list: " + all.length);
+      }
+      if (epInfo && epInfo.mal && epInfo.slug && epInfo.ts) {
+        var mp = yield safeFetch("https://mapper.mewcdn.online/api/mal/" + epInfo.mal + "/" + epInfo.slug + "/" + epInfo.ts, { headers: { Accept: "application/json" } }, 8000)
+          .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
+        if (mp && typeof mp === "object") {
+          Object.keys(mp).forEach(function (k) {
+            var d = mp[k];
+            if (k === "status" || !d || typeof d !== "object") return;
+            var nm = k.replace(/-/g, " ");
+            ["sub", "dub"].forEach(function (t) {
+              if (d[t] && d[t].url) all.push({ type: t, linkId: d[t].url, name: nm });
+            });
+          });
+        }
+        console.log("[Anikoto] with mapper: " + all.length);
+      }
+      var seenIds = {};
+      all = all.filter(function (x) { if (seenIds[x.linkId]) return false; seenIds[x.linkId] = true; return true; });
       var servers = all.filter(function (x) {
         return (x.type === "dub" && wantDub) || (x.type === "sub" && wantSub) || (x.type !== "dub" && x.type !== "sub");
       });
